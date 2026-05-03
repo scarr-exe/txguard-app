@@ -175,7 +175,7 @@ export function useSimulator() {
 
       // Simulate via RPC
       const simResult = await solanaRpc('simulateTransaction', [
-        Buffer.from(txBytes).toString('base64'),
+        toBase64(txBytes),
         {
           encoding: 'base64',
           commitment: 'confirmed',
@@ -211,7 +211,7 @@ export function useSimulator() {
         fee: (value?.fee || 5000) / 1e9,
         computeUnits: value?.unitsConsumed || 0,
         simulatedAt: new Date().toISOString(),
-        rawTx: Buffer.from(txBytes).toString('base64'),
+        rawTx: toBase64(txBytes),
       }
 
       setResult(fullResult)
@@ -295,6 +295,16 @@ function parseTransactionInfo(txBytes, simValue) {
   } catch {
     return { isVersioned: false, version: 'legacy', size: txBytes.length, logCount: 0 }
   }
+}
+
+function toBase64(bytes) {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+  return btoa(binary)
 }
 
 async function probeUrlForTransaction(url, walletAddress) {

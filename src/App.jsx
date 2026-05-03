@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import bs58 from 'bs58'
 import { useSolflare } from './hooks/useSolflare'
+import { useSimulator } from './hooks/useSimulator'
+import { solanaRpc } from './config'
 
 // ─── STYLES ──────────────────────────────────────────────────────────────────
 const styles = `
@@ -654,74 +656,6 @@ const styles = `
   }
 `
 
-// ─── MOCK DATA ────────────────────────────────────────────────────────────────
-const mockResults = {
-  safe: {
-    riskLevel: 'safe',
-    riskScore: 12,
-    summary: 'Low-risk transaction — standard token swap',
-    explanation: `This transaction will swap <strong>0.5 SOL</strong> for approximately <strong>82.4 USDC</strong> via Jupiter Aggregator. The contract at <strong>JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB</strong> is a verified, audited program with over 2M transactions. No unlimited approvals requested. Slippage set at 1%. Fees total ~0.000005 SOL.`,
-    tokenChanges: [
-      { symbol: 'SOL', name: 'Solana', amount: '-0.5000', direction: 'out' },
-      { symbol: 'USDC', name: 'USD Coin', amount: '+82.41', direction: 'in' },
-      { symbol: 'SOL', name: 'Network Fee', amount: '-0.000005', direction: 'out' },
-    ],
-    flags: [
-      { severity: 'green', message: 'Contract is verified and audited (Jupiter v6)' },
-      { severity: 'green', message: 'No unlimited token approvals requested' },
-      { severity: 'green', message: 'Slippage within normal range (1%)' },
-    ],
-    meta: {
-      program: 'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',
-      fee: '0.000005 SOL',
-      computeUnits: '200,000',
-      type: 'Token Swap',
-    },
-  },
-  warning: {
-    riskLevel: 'warning',
-    riskScore: 58,
-    summary: 'Caution — large approval and unverified contract',
-    explanation: `This transaction requests <span class="warn">unlimited USDC spending approval</span> for contract <strong>9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin</strong>. The contract is <span class="warn">unverified</span> on Solana explorer. While the program may be legitimate, unlimited approvals give it full control over your USDC balance. Consider approving only the amount you need for this interaction.`,
-    tokenChanges: [
-      { symbol: 'USDC', name: 'Approval (unlimited)', amount: '∞ approved', direction: 'out' },
-      { symbol: 'SOL', name: 'Network Fee', amount: '-0.000005', direction: 'out' },
-    ],
-    flags: [
-      { severity: 'amber', message: 'Unlimited USDC approval — grants full balance access' },
-      { severity: 'amber', message: 'Contract is not verified on Solana Explorer' },
-      { severity: 'green', message: 'No immediate fund transfer in this transaction' },
-    ],
-    meta: {
-      program: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
-      fee: '0.000005 SOL',
-      computeUnits: '50,000',
-      type: 'Token Approval',
-    },
-  },
-  danger: {
-    riskLevel: 'danger',
-    riskScore: 94,
-    summary: 'High risk — known drainer pattern detected',
-    explanation: `<span class="bad">STOP.</span> This transaction matches a known wallet drainer pattern. It requests a <span class="bad">setAuthority instruction</span> that would transfer ownership of your token accounts to an external address. The contract <strong>DrainXXXX1111XXXX2222XXXX3333XXXX4444XXXXzz</strong> has been <span class="bad">flagged in 847 previous scam reports</span>. Signing this will give attackers full control of your wallet assets. Do not proceed.`,
-    tokenChanges: [
-      { symbol: 'ALL', name: 'All token accounts', amount: 'OWNERSHIP TRANSFER', direction: 'out' },
-      { symbol: 'SOL', name: 'Network Fee', amount: '-0.000005', direction: 'out' },
-    ],
-    flags: [
-      { severity: 'red', message: 'CRITICAL: setAuthority instruction detected — wallet takeover' },
-      { severity: 'red', message: 'Contract flagged in 847 scam reports on-chain' },
-      { severity: 'red', message: 'Recipient address linked to known drainer cluster' },
-    ],
-    meta: {
-      program: 'DrainXXXX1111XXXX2222XXXX3333XXXX4444XXXXzz',
-      fee: '0.000005 SOL',
-      computeUnits: '400,000',
-      type: 'MALICIOUS — setAuthority',
-    },
-  },
-}
-
 // ─── TABS CONFIG ──────────────────────────────────────────────────────────────
 const TABS = [
   { id: 'tx', label: 'Raw TX Data', icon: '⬡', placeholder: 'Paste base64 encoded transaction data...', multiline: true },
@@ -773,6 +707,159 @@ function decodeTransaction(input) {
   throw new Error('Invalid transaction data. Use base64, base58, or hex.')
 }
 
+const BPF_LOADERS = new Set([
+  'BPFLoader1111111111111111111111111111111111',
+  'BPFLoader2111111111111111111111111111111111',
+  'BPFLoaderUpgradeab1e11111111111111111111111',
+])
+
+function mapRiskLevel(level, hasError) {
+  if (hasError) return 'danger'
+  if (level === 'low') return 'safe'
+  if (level === 'medium') return 'warning'
+  return 'danger'
+}
+
+function formatAmount(value) {
+  const abs = Math.abs(value)
+  if (abs === 0) return '0'
+  if (abs < 0.0001) return abs.toExponential(2)
+  if (abs < 1) return abs.toFixed(6)
+  return abs.toFixed(4)
+}
+
+function extractProgramId(logs = []) {
+  for (const log of logs) {
+    const match = log.match(/Program ([A-Za-z0-9]{32,44}) invoke/)
+    if (match) return match[1]
+  }
+  return null
+}
+
+function buildSimulationView(simResult) {
+  const risk = simResult?.risk || {}
+  const simErr = simResult?.simValue?.err
+  const riskLevel = mapRiskLevel(risk.level, !!simErr)
+  const riskScore = Math.min(100, Math.max(0, risk.score ?? (simErr ? 80 : 10)))
+
+  const tokenChanges = (simResult?.balanceChanges || []).map(change => ({
+    symbol: change.symbol || 'TOKEN',
+    name: change.name || 'Token',
+    amount: `${change.change < 0 ? '-' : '+'}${formatAmount(change.change || 0)}`,
+    direction: change.change < 0 ? 'out' : 'in',
+  }))
+
+  if (tokenChanges.length === 0) {
+    tokenChanges.push({ symbol: '—', name: 'No balance changes', amount: '0', direction: 'in' })
+  }
+
+  const warnings = risk.warnings || []
+  const flags = warnings.length > 0
+    ? warnings.map(w => ({
+      severity: w.level === 'critical' || w.level === 'high' ? 'red' : w.level === 'medium' ? 'amber' : 'green',
+      message: w.text,
+    }))
+    : [{ severity: 'green', message: 'No suspicious patterns detected' }]
+
+  const programId = extractProgramId(simResult?.logs) || 'Multiple programs'
+  const fee = `${(simResult?.fee || 0).toFixed(6)} SOL`
+  const computeUnits = (simResult?.computeUnits || 0).toLocaleString()
+  const version = simResult?.txInfo?.version
+  const type = version === 'legacy' ? 'Legacy Transaction' : `v${version ?? '0'} Transaction`
+
+  const warningsCount = warnings.length
+  const changesCount = simResult?.balanceChanges?.length || 0
+
+  let summary = 'Simulation completed — review details'
+  if (simErr) summary = 'Simulation failed — transaction would error'
+  else if (riskLevel === 'safe') summary = 'Low-risk transaction — no critical warnings'
+  else if (riskLevel === 'warning') summary = 'Caution — review before signing'
+  else summary = 'High risk — suspicious patterns detected'
+
+  const explanationParts = [
+    `Detected <strong>${changesCount}</strong> balance change${changesCount === 1 ? '' : 's'} and <strong>${warningsCount}</strong> finding${warningsCount === 1 ? '' : 's'}.`,
+    `Network fee estimated at <strong>${fee}</strong>.`,
+  ]
+
+  if (simErr) {
+    explanationParts.push('<span class="bad">The transaction failed during simulation.</span>')
+  } else if (riskLevel === 'warning') {
+    explanationParts.push('<span class="warn">Review warnings before signing.</span>')
+  } else if (riskLevel === 'danger') {
+    explanationParts.push('<span class="bad">High-risk signals detected. Avoid signing.</span>')
+  } else {
+    explanationParts.push('No critical issues detected in the simulation.')
+  }
+
+  return {
+    riskLevel,
+    riskScore,
+    summary,
+    explanation: explanationParts.join(' '),
+    tokenChanges,
+    flags,
+    meta: {
+      program: programId,
+      fee,
+      computeUnits,
+      type,
+    },
+  }
+}
+
+function buildAccountView(address, accountInfo) {
+  const executable = accountInfo?.executable
+  const owner = accountInfo?.owner
+  const lamports = accountInfo?.lamports || 0
+  const balance = lamports / 1e9
+  const isLoader = owner ? BPF_LOADERS.has(owner) : false
+
+  let riskLevel = 'safe'
+  let riskScore = 18
+  const flags = []
+
+  if (executable) {
+    flags.push({ severity: 'green', message: 'Executable program account' })
+  } else {
+    flags.push({ severity: 'amber', message: 'Account is not executable (likely token or data account)' })
+    riskLevel = 'warning'
+    riskScore = 55
+  }
+
+  if (isLoader) {
+    flags.push({ severity: 'green', message: 'Owned by standard BPF loader' })
+  } else {
+    flags.push({ severity: 'amber', message: 'Non-standard program owner' })
+    riskLevel = riskLevel === 'safe' ? 'warning' : riskLevel
+    riskScore = Math.max(riskScore, 45)
+  }
+
+  const parsedType = accountInfo?.data?.parsed?.type
+  if (parsedType) {
+    flags.push({ severity: 'green', message: `Parsed as ${parsedType}` })
+  }
+
+  const summary = executable ? 'Program account lookup — executable' : 'Account lookup — not executable'
+  const explanation = `Live account lookup only. This does not simulate a transaction. Balance is <strong>${balance.toFixed(6)} SOL</strong>.`
+
+  return {
+    riskLevel,
+    riskScore,
+    summary,
+    explanation,
+    tokenChanges: [
+      { symbol: 'SOL', name: 'Account Balance', amount: `${balance.toFixed(6)} SOL`, direction: 'in' },
+    ],
+    flags,
+    meta: {
+      program: address,
+      fee: '—',
+      computeUnits: '—',
+      type: executable ? 'Program Account' : 'Account Info',
+    },
+  }
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function TxGuard() {
   const [tab, setTab] = useState('tx')
@@ -781,7 +868,10 @@ export default function TxGuard() {
   const [result, setResult] = useState(null)
   const [stepDone, setStepDone] = useState([])
   const [currentStep, setCurrentStep] = useState(0)
+  const [pendingResult, setPendingResult] = useState(null)
+  const [stepsComplete, setStepsComplete] = useState(false)
   const { publicKey, connecting, error: walletError, connect, disconnect, signTransaction } = useSolflare()
+  const { simulate } = useSimulator()
   const [signing, setSigning] = useState(false)
   const [toast, setToast] = useState(null)
   const inputRef = useRef(null)
@@ -791,6 +881,7 @@ export default function TxGuard() {
     if (phase !== 'scanning') return
     setStepDone([])
     setCurrentStep(0)
+    setStepsComplete(false)
     let i = 0
     const interval = setInterval(() => {
       setStepDone(prev => [...prev, i])
@@ -798,19 +889,19 @@ export default function TxGuard() {
       setCurrentStep(i)
       if (i >= STEPS.length) {
         clearInterval(interval)
-        setTimeout(() => {
-          // pick mock result based on input keyword for demo
-          let res = mockResults.safe
-          const v = input.toLowerCase()
-          if (v.includes('drain') || v.includes('scam') || v.includes('danger')) res = mockResults.danger
-          else if (v.includes('warn') || v.includes('approval') || v.includes('unverified')) res = mockResults.warning
-          setResult(res)
-          setPhase('result')
-        }, 600)
+        setStepsComplete(true)
       }
     }, 480)
     return () => clearInterval(interval)
-  }, [phase, input])
+  }, [phase])
+
+  useEffect(() => {
+    if (phase !== 'scanning') return
+    if (!stepsComplete || !pendingResult) return
+    setResult(pendingResult)
+    setPendingResult(null)
+    setPhase('result')
+  }, [phase, stepsComplete, pendingResult])
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type })
@@ -822,9 +913,52 @@ export default function TxGuard() {
     showToast(walletError, 'error')
   }, [walletError])
 
-  const handleAnalyze = () => {
-    if (!input.trim()) return
+  const handleAnalyze = async () => {
+    const value = input.trim()
+    if (!value) return
+    setResult(null)
+    setPendingResult(null)
     setPhase('scanning')
+
+    try {
+      let viewResult
+
+      if (tab === 'tx') {
+        const simResult = await simulate({
+          inputType: 'raw_transaction',
+          rawInput: value,
+          walletAddress: publicKey,
+        })
+        viewResult = buildSimulationView(simResult)
+      } else if (tab === 'hash') {
+        const tx = await solanaRpc('getTransaction', [value, {
+          encoding: 'base64',
+          commitment: 'confirmed',
+          maxSupportedTransactionVersion: 0,
+        }])
+        const rawTx = tx?.transaction?.[0]
+        if (!rawTx) throw new Error('Transaction not found or unsupported')
+
+        const simResult = await simulate({
+          inputType: 'raw_transaction',
+          rawInput: rawTx,
+          walletAddress: publicKey,
+        })
+        viewResult = buildSimulationView(simResult)
+      } else if (tab === 'addr') {
+        const accountInfo = await solanaRpc('getAccountInfo', [value, { encoding: 'jsonParsed' }])
+        if (!accountInfo?.value) throw new Error('Account not found')
+        viewResult = buildAccountView(value, accountInfo.value)
+      } else {
+        throw new Error('URL analysis is not available yet')
+      }
+
+      setPendingResult(viewResult)
+    } catch (err) {
+      setPhase('idle')
+      setPendingResult(null)
+      showToast(err.message || 'Analysis failed', 'error')
+    }
   }
 
   const handleSign = async () => {
@@ -871,6 +1005,8 @@ export default function TxGuard() {
     setInput('')
     setStepDone([])
     setCurrentStep(0)
+    setPendingResult(null)
+    setStepsComplete(false)
   }
 
   const connectWallet = async () => {
@@ -889,6 +1025,7 @@ export default function TxGuard() {
 
   const riskColor = result ? result.riskLevel : 'safe'
   const walletShort = publicKey ? `${publicKey.slice(0, 4)}...${publicKey.slice(-4)}` : null
+  const canSign = tab === 'tx' && riskColor !== 'danger'
 
   return (
     <>
@@ -963,7 +1100,7 @@ export default function TxGuard() {
                 />
                 <div className="input-actions">
                   <span className="hint">
-                    tip: type "drain", "warning" or leave blank for demo results
+                    tip: raw tx, tx hash, and contract address run live RPC checks
                   </span>
                   <button
                     className="btn-analyze"
@@ -1083,13 +1220,19 @@ export default function TxGuard() {
                   Reject
                 </button>
                 <button
-                  className={`btn-sign ${riskColor === 'danger' ? 'disabled' : ''}`}
+                  className={`btn-sign ${!canSign ? 'disabled' : ''}`}
                   onClick={handleSign}
-                  disabled={riskColor === 'danger' || signing}
-                  title={riskColor === 'danger' ? 'Blocked — high-risk transaction' : 'Sign via Solflare'}
+                  disabled={!canSign || signing}
+                  title={!canSign
+                    ? (tab !== 'tx' ? 'Raw transaction data is required to sign' : 'Blocked — high-risk transaction')
+                    : 'Sign via Solflare'}
                 >
                   <ShieldIcon style={{ width: 13, height: 13 }} />
-                  {signing ? 'Signing...' : (riskColor === 'danger' ? 'Signing Blocked' : 'Sign via Solflare')}
+                  {signing
+                    ? 'Signing...'
+                    : !canSign
+                      ? (tab !== 'tx' ? 'Raw TX Required' : 'Signing Blocked')
+                      : 'Sign via Solflare'}
                 </button>
               </div>
             </div>
