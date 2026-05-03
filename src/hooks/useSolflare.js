@@ -13,7 +13,7 @@ export function useSolflare() {
     try {
       let Solflare
       try {
-        const mod = await import('@solflare-network/solflare-sdk')
+        const mod = await import('@solflare-wallet/sdk')
         Solflare = mod.default || mod.Solflare
       } catch {
         throw new Error('Failed to load Solflare SDK. Please ensure @solflare-network/solflare-sdk is installed.')

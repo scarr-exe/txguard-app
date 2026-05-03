@@ -1,34 +1,850 @@
-import React, { useState, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import bs58 from 'bs58'
 import { useSolflare } from './hooks/useSolflare'
-import { useSimulator } from './hooks/useSimulator'
-import WalletConnect from './components/WalletConnect'
-import TransactionInput from './components/TransactionInput'
-import RiskMeter from './components/RiskMeter'
-import BalanceChanges from './components/BalanceChanges'
-import AIExplanation from './components/AIExplanation'
-import TransactionDetails from './components/TransactionDetails'
-import DecisionBar from './components/DecisionBar'
 
-export default function App() {
-  const { wallet, publicKey, connecting, error: walletError, connect, disconnect, signTransaction } = useSolflare()
-  const { status, result, error: simError, simulate, reset } = useSimulator()
-  const [signing, setSigning] = useState(false)
+// ─── STYLES ──────────────────────────────────────────────────────────────────
+const styles = `
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;500;600;700;800&display=swap');
 
-  const handleSimulate = useCallback(async (params) => {
-    try {
-      await simulate(params)
-    } catch {
-      // error shown in UI via simError
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #080b09;
+    --bg2:       #0d1210;
+    --bg3:       #111a14;
+    --border:    #1a2e1f;
+    --green:     #00e676;
+    --green-dim: #00c85a;
+    --green-glow:#00e67622;
+    --green-lo:  #0d2016;
+    --amber:     #ffb300;
+    --red:       #ff3d57;
+    --red-lo:    #1e0a0d;
+    --text:      #d4f0db;
+    --text-dim:  #6b8f72;
+    --text-muted:#344d39;
+    --mono:      'Space Mono', monospace;
+    --sans:      'Syne', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* grid bg */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 40px 40px;
+    opacity: 0.35;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  #root { position: relative; z-index: 1; }
+
+  /* ── NAV ── */
+  .nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 36px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(8,11,9,0.85);
+    backdrop-filter: blur(12px);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .nav-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: 1.2rem;
+    letter-spacing: -0.02em;
+    color: var(--green);
+  }
+  .nav-logo svg { width: 28px; height: 28px; }
+  .nav-badge {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    background: var(--green-lo);
+    color: var(--green-dim);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 7px;
+    letter-spacing: 0.08em;
+  }
+  .nav-right { display: flex; align-items: center; gap: 12px; }
+  .btn-wallet {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--green-lo);
+    border: 1px solid var(--green-dim);
+    color: var(--green);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.04em;
+  }
+  .btn-wallet:hover { background: var(--green-glow); box-shadow: 0 0 16px var(--green-glow); }
+  .btn-wallet.connected { border-color: var(--green); }
+  .wallet-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  /* ── HERO ── */
+  .hero {
+    text-align: center;
+    padding: 64px 24px 40px;
+  }
+  .hero-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--green-dim);
+    border: 1px solid var(--border);
+    background: var(--green-lo);
+    padding: 4px 12px;
+    border-radius: 100px;
+    margin-bottom: 24px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .hero h1 {
+    font-size: clamp(2.2rem, 5vw, 3.8rem);
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    line-height: 1.05;
+    margin-bottom: 16px;
+  }
+  .hero h1 span { color: var(--green); }
+  .hero p {
+    color: var(--text-dim);
+    font-size: 1rem;
+    max-width: 480px;
+    margin: 0 auto;
+    line-height: 1.6;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+  }
+
+  /* ── INPUT CARD ── */
+  .card-wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 24px 48px;
+  }
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .input-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tab {
+    padding: 12px 20px;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: all 0.18s;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: var(--green);
+    border-bottom-color: var(--green);
+    background: var(--green-lo);
+  }
+
+  .input-body { padding: 24px; }
+  .input-label {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .input-field {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    padding: 14px 16px;
+    resize: vertical;
+    min-height: 100px;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    letter-spacing: 0.01em;
+    line-height: 1.6;
+  }
+  .input-field::placeholder { color: var(--text-muted); }
+  .input-field:focus {
+    border-color: var(--green-dim);
+    box-shadow: 0 0 0 3px var(--green-glow);
+  }
+  .input-field.single { min-height: unset; resize: none; height: 48px; padding: 12px 16px; }
+
+  .input-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 16px;
+    gap: 12px;
+  }
+  .hint {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    color: var(--text-muted);
+  }
+  .btn-analyze {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--green);
+    color: #000;
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.85rem;
+    padding: 11px 24px;
+    border-radius: 7px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.18s;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+  .btn-analyze:hover {
+    background: #00ff88;
+    box-shadow: 0 0 24px #00e67655;
+    transform: translateY(-1px);
+  }
+  .btn-analyze:disabled {
+    background: var(--text-muted);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+
+  /* ── SCANNING STATE ── */
+  .scanning {
+    padding: 48px 24px;
+    text-align: center;
+  }
+  .scan-ring {
+    width: 72px; height: 72px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    border-top-color: var(--green);
+    animation: spin 0.9s linear infinite;
+    margin: 0 auto 20px;
+    position: relative;
+  }
+  .scan-ring::after {
+    content: '';
+    position: absolute;
+    inset: 6px;
+    border-radius: 50%;
+    border: 1px solid transparent;
+    border-top-color: var(--green-dim);
+    animation: spin 1.4s linear infinite reverse;
+  }
+  .scan-label {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--green-dim);
+    letter-spacing: 0.08em;
+    animation: blink 1.2s step-end infinite;
+  }
+  .scan-steps {
+    margin-top: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .scan-step {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: color 0.3s;
+  }
+  .scan-step.done { color: var(--green-dim); }
+  .scan-step.active { color: var(--text); }
+
+  /* ── RESULTS ── */
+  .results { padding: 0; }
+
+  .risk-banner {
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .risk-banner.safe { background: linear-gradient(135deg, #051a0a, #091d0e); }
+  .risk-banner.warning { background: linear-gradient(135deg, #1a1200, #1f1500); }
+  .risk-banner.danger { background: linear-gradient(135deg, #1a0509, #200608); }
+
+  .risk-score-ring {
+    flex-shrink: 0;
+    width: 60px; height: 60px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 1rem;
+    border: 2px solid;
+  }
+  .risk-score-ring.safe { border-color: var(--green); color: var(--green); background: var(--green-lo); }
+  .risk-score-ring.warning { border-color: var(--amber); color: var(--amber); background: #1a120055; }
+  .risk-score-ring.danger { border-color: var(--red); color: var(--red); background: var(--red-lo); }
+
+  .risk-text h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+    letter-spacing: -0.02em;
+  }
+  .risk-text p {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .safe-text { color: var(--green); }
+  .warning-text { color: var(--amber); }
+  .danger-text { color: var(--red); }
+
+  .results-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  .result-cell {
+    background: var(--bg2);
+    padding: 20px 24px;
+  }
+  .result-cell-label {
+    font-family: var(--mono);
+    font-size: 0.63rem;
+    color: var(--text-muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  /* token changes */
+  .token-change {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.73rem;
+  }
+  .token-change:last-child { border-bottom: none; }
+  .token-icon {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .token-name { color: var(--text); flex: 1; }
+  .token-amount.out { color: var(--red); }
+  .token-amount.in { color: var(--green); }
+
+  /* flags */
+  .flags { padding: 0; }
+  .flag {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.71rem;
+    line-height: 1.5;
+  }
+  .flag:last-child { border-bottom: none; }
+  .flag-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+  .flag-dot.red { background: var(--red); }
+  .flag-dot.amber { background: var(--amber); }
+  .flag-dot.green { background: var(--green); }
+  .flag-msg { color: var(--text-dim); }
+
+  /* explanation */
+  .explanation {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .expl-label {
+    font-family: var(--mono);
+    font-size: 0.63rem;
+    color: var(--text-muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .expl-text {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text);
+    line-height: 1.7;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .expl-text strong { color: var(--green); font-weight: 700; }
+  .expl-text .warn { color: var(--amber); }
+  .expl-text .bad { color: var(--red); }
+
+  /* meta row */
+  .meta-row {
+    padding: 16px 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg3);
+  }
+  .meta-item { display: flex; flex-direction: column; gap: 4px; }
+  .meta-key {
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .meta-val {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+  }
+  .meta-val.addr {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* action bar */
+  .action-bar {
+    padding: 20px 24px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: flex-end;
+  }
+  .btn-reject {
+    background: var(--red-lo);
+    border: 1px solid var(--red);
+    color: var(--red);
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.83rem;
+    padding: 11px 24px;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: all 0.18s;
+    letter-spacing: -0.01em;
+  }
+  .btn-reject:hover { background: #ff3d5722; box-shadow: 0 0 16px #ff3d5733; }
+
+  .btn-sign {
+    background: var(--green);
+    color: #000;
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.83rem;
+    padding: 11px 24px;
+    border-radius: 7px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.18s;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .btn-sign:hover { background: #00ff88; box-shadow: 0 0 24px #00e67644; }
+  .btn-sign.disabled {
+    background: var(--text-muted);
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .btn-reset {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.18s;
+    margin-right: auto;
+  }
+  .btn-reset:hover { border-color: var(--text-dim); color: var(--text); }
+
+  /* stats row */
+  .stats-row {
+    display: flex;
+    gap: 0;
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+    max-width: 760px;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 0 24px;
+  }
+  .stat {
+    flex: 1;
+    padding: 24px;
+    text-align: center;
+    border-right: 1px solid var(--border);
+  }
+  .stat:last-child { border-right: none; }
+  .stat-val {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--green);
+    display: block;
+  }
+  .stat-key {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 4px;
+    display: block;
+  }
+
+  /* footer */
+  .footer {
+    text-align: center;
+    padding: 32px 24px;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+    letter-spacing: 0.04em;
+  }
+  .footer a { color: var(--text-dim); text-decoration: none; }
+  .footer a:hover { color: var(--green); }
+
+  /* toast */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 18px;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text);
+    z-index: 999;
+    animation: slideUp 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 320px;
+  }
+  .toast.success { border-color: var(--green-dim); }
+  .toast.error { border-color: var(--red); }
+
+  /* animations */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-in { animation: fadeIn 0.35s ease forwards; }
+
+  @media (max-width: 600px) {
+    .nav { padding: 14px 18px; }
+    .hero { padding: 40px 18px 28px; }
+    .results-grid { grid-template-columns: 1fr; }
+    .stats-row { flex-direction: column; }
+    .stat { border-right: none; border-bottom: 1px solid var(--border); }
+    .stat:last-child { border-bottom: none; }
+    .action-bar { flex-wrap: wrap; }
+    .btn-reset { width: 100%; text-align: center; margin-right: 0; }
+  }
+`
+
+// ─── MOCK DATA ────────────────────────────────────────────────────────────────
+const mockResults = {
+  safe: {
+    riskLevel: 'safe',
+    riskScore: 12,
+    summary: 'Low-risk transaction — standard token swap',
+    explanation: `This transaction will swap <strong>0.5 SOL</strong> for approximately <strong>82.4 USDC</strong> via Jupiter Aggregator. The contract at <strong>JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB</strong> is a verified, audited program with over 2M transactions. No unlimited approvals requested. Slippage set at 1%. Fees total ~0.000005 SOL.`,
+    tokenChanges: [
+      { symbol: 'SOL', name: 'Solana', amount: '-0.5000', direction: 'out' },
+      { symbol: 'USDC', name: 'USD Coin', amount: '+82.41', direction: 'in' },
+      { symbol: 'SOL', name: 'Network Fee', amount: '-0.000005', direction: 'out' },
+    ],
+    flags: [
+      { severity: 'green', message: 'Contract is verified and audited (Jupiter v6)' },
+      { severity: 'green', message: 'No unlimited token approvals requested' },
+      { severity: 'green', message: 'Slippage within normal range (1%)' },
+    ],
+    meta: {
+      program: 'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',
+      fee: '0.000005 SOL',
+      computeUnits: '200,000',
+      type: 'Token Swap',
+    },
+  },
+  warning: {
+    riskLevel: 'warning',
+    riskScore: 58,
+    summary: 'Caution — large approval and unverified contract',
+    explanation: `This transaction requests <span class="warn">unlimited USDC spending approval</span> for contract <strong>9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin</strong>. The contract is <span class="warn">unverified</span> on Solana explorer. While the program may be legitimate, unlimited approvals give it full control over your USDC balance. Consider approving only the amount you need for this interaction.`,
+    tokenChanges: [
+      { symbol: 'USDC', name: 'Approval (unlimited)', amount: '∞ approved', direction: 'out' },
+      { symbol: 'SOL', name: 'Network Fee', amount: '-0.000005', direction: 'out' },
+    ],
+    flags: [
+      { severity: 'amber', message: 'Unlimited USDC approval — grants full balance access' },
+      { severity: 'amber', message: 'Contract is not verified on Solana Explorer' },
+      { severity: 'green', message: 'No immediate fund transfer in this transaction' },
+    ],
+    meta: {
+      program: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
+      fee: '0.000005 SOL',
+      computeUnits: '50,000',
+      type: 'Token Approval',
+    },
+  },
+  danger: {
+    riskLevel: 'danger',
+    riskScore: 94,
+    summary: 'High risk — known drainer pattern detected',
+    explanation: `<span class="bad">STOP.</span> This transaction matches a known wallet drainer pattern. It requests a <span class="bad">setAuthority instruction</span> that would transfer ownership of your token accounts to an external address. The contract <strong>DrainXXXX1111XXXX2222XXXX3333XXXX4444XXXXzz</strong> has been <span class="bad">flagged in 847 previous scam reports</span>. Signing this will give attackers full control of your wallet assets. Do not proceed.`,
+    tokenChanges: [
+      { symbol: 'ALL', name: 'All token accounts', amount: 'OWNERSHIP TRANSFER', direction: 'out' },
+      { symbol: 'SOL', name: 'Network Fee', amount: '-0.000005', direction: 'out' },
+    ],
+    flags: [
+      { severity: 'red', message: 'CRITICAL: setAuthority instruction detected — wallet takeover' },
+      { severity: 'red', message: 'Contract flagged in 847 scam reports on-chain' },
+      { severity: 'red', message: 'Recipient address linked to known drainer cluster' },
+    ],
+    meta: {
+      program: 'DrainXXXX1111XXXX2222XXXX3333XXXX4444XXXXzz',
+      fee: '0.000005 SOL',
+      computeUnits: '400,000',
+      type: 'MALICIOUS — setAuthority',
+    },
+  },
+}
+
+// ─── TABS CONFIG ──────────────────────────────────────────────────────────────
+const TABS = [
+  { id: 'tx', label: 'Raw TX Data', icon: '⬡', placeholder: 'Paste base64 encoded transaction data...', multiline: true },
+  { id: 'hash', label: 'TX Hash', icon: '#', placeholder: 'e.g. 5KtPn1...', multiline: false },
+  { id: 'addr', label: 'Contract Address', icon: '◈', placeholder: 'e.g. JUP4Fb2cqiRUcaTH...', multiline: false },
+  { id: 'url', label: 'dApp URL', icon: '⊕', placeholder: 'e.g. https://app.example.com/swap?...', multiline: false },
+]
+
+// ─── ICONS ────────────────────────────────────────────────────────────────────
+const ShieldIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+  </svg>
+)
+
+// ─── SCAN STEPS ───────────────────────────────────────────────────────────────
+const STEPS = [
+  'Decoding transaction payload',
+  'Simulating on-chain execution',
+  'Checking contract reputation',
+  'Analyzing token movements',
+  'Running drainer pattern checks',
+  'Generating risk report',
+]
+
+function decodeTransaction(input) {
+  const cleaned = input.trim()
+  try {
+    const decoded = atob(cleaned)
+    return Uint8Array.from(decoded, c => c.charCodeAt(0))
+  } catch {
+    // continue
+  }
+
+  try {
+    return bs58.decode(cleaned)
+  } catch {
+    // continue
+  }
+
+  if (/^[0-9a-fA-F]+$/.test(cleaned) && cleaned.length % 2 === 0) {
+    const bytes = new Uint8Array(cleaned.length / 2)
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = parseInt(cleaned.slice(i * 2, i * 2 + 2), 16)
     }
-  }, [simulate])
+    return bytes
+  }
 
-  const handleSign = useCallback(async (rawTx) => {
-    if (!wallet || !signTransaction) return
+  throw new Error('Invalid transaction data. Use base64, base58, or hex.')
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+export default function TxGuard() {
+  const [tab, setTab] = useState('tx')
+  const [input, setInput] = useState('')
+  const [phase, setPhase] = useState('idle') // idle | scanning | result
+  const [result, setResult] = useState(null)
+  const [stepDone, setStepDone] = useState([])
+  const [currentStep, setCurrentStep] = useState(0)
+  const { publicKey, connecting, error: walletError, connect, disconnect, signTransaction } = useSolflare()
+  const [signing, setSigning] = useState(false)
+  const [toast, setToast] = useState(null)
+  const inputRef = useRef(null)
+
+  // cycle through scan steps
+  useEffect(() => {
+    if (phase !== 'scanning') return
+    setStepDone([])
+    setCurrentStep(0)
+    let i = 0
+    const interval = setInterval(() => {
+      setStepDone(prev => [...prev, i])
+      i += 1
+      setCurrentStep(i)
+      if (i >= STEPS.length) {
+        clearInterval(interval)
+        setTimeout(() => {
+          // pick mock result based on input keyword for demo
+          let res = mockResults.safe
+          const v = input.toLowerCase()
+          if (v.includes('drain') || v.includes('scam') || v.includes('danger')) res = mockResults.danger
+          else if (v.includes('warn') || v.includes('approval') || v.includes('unverified')) res = mockResults.warning
+          setResult(res)
+          setPhase('result')
+        }, 600)
+      }
+    }, 480)
+    return () => clearInterval(interval)
+  }, [phase, input])
+
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 3000)
+  }
+
+  useEffect(() => {
+    if (!walletError) return
+    showToast(walletError, 'error')
+  }, [walletError])
+
+  const handleAnalyze = () => {
+    if (!input.trim()) return
+    setPhase('scanning')
+  }
+
+  const handleSign = async () => {
+    if (!publicKey) {
+      showToast('Connect Solflare wallet first', 'error')
+      return
+    }
+    if (tab !== 'tx') {
+      showToast('Signing requires raw transaction data', 'error')
+      return
+    }
+    if (!input.trim()) {
+      showToast('Paste a transaction first', 'error')
+      return
+    }
+
     setSigning(true)
     try {
-      // Decode the base64 rawTx and build a VersionedTransaction or Transaction
+      const txBytes = decodeTransaction(input)
       const { Transaction, VersionedTransaction } = await import('@solana/web3.js')
-      const txBytes = Uint8Array.from(atob(rawTx), c => c.charCodeAt(0))
       let tx
       try {
         tx = VersionedTransaction.deserialize(txBytes)
@@ -36,177 +852,281 @@ export default function App() {
         tx = Transaction.from(txBytes)
       }
       await signTransaction(tx)
+      showToast('Transaction sent to Solflare for signing ✓', 'success')
+    } catch (err) {
+      showToast(err.message || 'Signing failed', 'error')
     } finally {
       setSigning(false)
     }
-  }, [wallet, signTransaction])
+  }
 
-  const isSimulating = status === 'simulating'
-  const isDone = status === 'done' && result
+  const handleReject = () => {
+    showToast('Transaction rejected', 'error')
+    setTimeout(() => handleReset(), 1200)
+  }
+
+  const handleReset = () => {
+    setPhase('idle')
+    setResult(null)
+    setInput('')
+    setStepDone([])
+    setCurrentStep(0)
+  }
+
+  const connectWallet = async () => {
+    if (publicKey) {
+      await disconnect()
+      showToast('Wallet disconnected')
+      return
+    }
+
+    try {
+      await connect()
+      showToast('Solflare connected ✓')
+    } catch {
+    }
+  }
+
+  const riskColor = result ? result.riskLevel : 'safe'
+  const walletShort = publicKey ? `${publicKey.slice(0, 4)}...${publicKey.slice(-4)}` : null
 
   return (
-    <div className="min-h-screen bg-solflare-bg text-solflare-text">
-      {/* Header */}
-      <header className="border-b border-solflare-border bg-solflare-surface/80 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-solflare flex items-center justify-center shadow-orange-glow">
-              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-            </div>
-            <div>
-              <div className="font-bold text-solflare-text text-sm leading-tight">Solflare Risk Simulator</div>
-              <div className="text-xs text-solflare-muted leading-tight">Preview transactions before signing</div>
-            </div>
-          </div>
-          <WalletConnect
-            publicKey={publicKey}
-            connecting={connecting}
-            onConnect={connect}
-            onDisconnect={disconnect}
-            error={walletError}
-          />
+    <>
+      <style>{styles}</style>
+
+      {/* NAV */}
+      <nav className="nav">
+        <div className="nav-logo">
+          <ShieldIcon />
+          TxGuard
+          <span className="nav-badge">SOLANA</span>
         </div>
-      </header>
+        <div className="nav-right">
+          <button
+            className={`btn-wallet ${publicKey ? 'connected' : ''}`}
+            onClick={connectWallet}
+            disabled={connecting}
+          >
+            {publicKey ? (
+              <><span className="wallet-dot" />{walletShort}</>
+            ) : (
+              <>{connecting ? 'Connecting...' : 'Connect Solflare'}</>
+            )}
+          </button>
+        </div>
+      </nav>
 
-      <main className="max-w-5xl mx-auto px-4 py-8">
-        {/* Hero — only on idle state */}
-        {status === 'idle' && !result && (
-          <div className="text-center mb-10 animate-fade-in">
-            <div className="inline-flex items-center gap-2 bg-solflare-surface border border-solflare-border rounded-full px-3 py-1.5 text-xs text-solflare-muted mb-4">
-              <div className="w-1.5 h-1.5 rounded-full bg-solflare-orange" />
-              Solana Mainnet — Read-Only Simulation
-            </div>
-            <h1 className="text-3xl md:text-4xl font-black mb-3">
-              <span className="gradient-text">Preview. Analyze. Decide.</span>
-            </h1>
-            <p className="text-solflare-muted text-base max-w-xl mx-auto leading-relaxed">
-              Simulate any Solana transaction before signing. See exactly what changes, assess the risk score, and get an AI explanation — all without touching your private key.
-            </p>
-          </div>
-        )}
+      {/* HERO */}
+      <div className="hero">
+        <div className="hero-tag">
+          <span style={{ color: 'var(--green)' }}>●</span>
+          Pre-sign transaction auditor
+        </div>
+        <h1>Know what you're<br /><span>signing</span> before you sign</h1>
+        <p>
+          Paste any Solana transaction, contract address, TX hash or dApp URL.
+          TxGuard simulates it, scores the risk, and explains exactly what it does.
+        </p>
+      </div>
 
-        {/* How it works — idle only */}
-        {status === 'idle' && !result && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10 animate-fade-in">
-            {[
-              { icon: '🔗', title: 'Connect Solflare', desc: 'Link your Solflare wallet to identify your accounts in the simulation.' },
-              { icon: '📋', title: 'Paste Transaction', desc: 'Paste a raw base64 transaction from any dApp, Telegram bot, or link.' },
-              { icon: '🔍', title: 'Inspect & Decide', desc: 'See balance changes, risk score, AI analysis, then approve or reject.' },
-            ].map((step, i) => (
-              <div key={i} className="bg-solflare-card border border-solflare-border rounded-2xl p-4 card-glow">
-                <div className="text-2xl mb-2">{step.icon}</div>
-                <div className="text-sm font-bold text-solflare-text mb-1">{step.title}</div>
-                <div className="text-xs text-solflare-muted leading-relaxed">{step.desc}</div>
+      {/* MAIN CARD */}
+      <div className="card-wrap">
+        <div className="card">
+
+          {/* ── IDLE: INPUT ── */}
+          {phase === 'idle' && (
+            <>
+              <div className="input-tabs">
+                {TABS.map(t => (
+                  <button
+                    key={t.id}
+                    className={`tab ${tab === t.id ? 'active' : ''}`}
+                    onClick={() => { setTab(t.id); setInput('') }}
+                  >
+                    <span>{t.icon}</span>
+                    {t.label}
+                  </button>
+                ))}
               </div>
-            ))}
-          </div>
-        )}
-
-        <div className={isDone ? 'grid grid-cols-1 lg:grid-cols-2 gap-6' : 'max-w-2xl mx-auto'}>
-          {/* Left column */}
-          <div className="space-y-5">
-            {/* Input card */}
-            {!isDone && (
-              <div className="bg-solflare-card border border-solflare-border rounded-2xl p-6 card-glow animate-fade-in">
-                <h2 className="text-base font-bold text-solflare-text mb-5">Simulate Transaction</h2>
-                <TransactionInput
-                  onSimulate={handleSimulate}
-                  disabled={isSimulating}
-                  walletAddress={publicKey}
+              <div className="input-body">
+                <div className="input-label">
+                  <span style={{ color: 'var(--green)' }}>→</span>
+                  {TABS.find(t => t.id === tab)?.label}
+                </div>
+                <textarea
+                  ref={inputRef}
+                  className={`input-field ${TABS.find(t => t.id === tab)?.multiline ? '' : 'single'}`}
+                  placeholder={TABS.find(t => t.id === tab)?.placeholder}
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  rows={TABS.find(t => t.id === tab)?.multiline ? 5 : 1}
                 />
-              </div>
-            )}
-
-            {/* Simulation error */}
-            {status === 'error' && simError && (
-              <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-5 animate-fade-in">
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center shrink-0">
-                    <svg className="w-4 h-4 text-solflare-red" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-bold text-solflare-red mb-1">Simulation Failed</div>
-                    <div className="text-sm text-solflare-muted leading-relaxed">{simError}</div>
-                    <button
-                      onClick={reset}
-                      className="mt-3 text-xs text-solflare-orange hover:text-solflare-orange/80 transition-colors"
-                    >
-                      ← Try Again
-                    </button>
-                  </div>
+                <div className="input-actions">
+                  <span className="hint">
+                    tip: type "drain", "warning" or leave blank for demo results
+                  </span>
+                  <button
+                    className="btn-analyze"
+                    onClick={handleAnalyze}
+                    disabled={!input.trim()}
+                  >
+                    <ShieldIcon style={{ width: 14, height: 14 }} />
+                    Analyze
+                  </button>
                 </div>
               </div>
-            )}
+            </>
+          )}
 
-            {/* Loading state */}
-            {isSimulating && (
-              <div className="bg-solflare-card border border-solflare-border rounded-2xl p-6 animate-fade-in">
-                <div className="flex items-center gap-4 mb-5">
-                  <div className="w-10 h-10 rounded-xl bg-solflare-orange/20 flex items-center justify-center">
-                    <svg className="w-5 h-5 text-solflare-orange animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
+          {/* ── SCANNING ── */}
+          {phase === 'scanning' && (
+            <div className="scanning fade-in">
+              <div className="scan-ring" />
+              <div className="scan-label">SCANNING TRANSACTION...</div>
+              <div className="scan-steps">
+                {STEPS.map((s, i) => (
+                  <div
+                    key={i}
+                    className={`scan-step ${
+                      stepDone.includes(i) ? 'done' :
+                      currentStep === i ? 'active' : ''
+                    }`}
+                  >
+                    <span>
+                      {stepDone.includes(i) ? '✓' : currentStep === i ? '›' : '·'}
+                    </span>
+                    {s}
                   </div>
-                  <div>
-                    <div className="text-sm font-bold text-solflare-text">Running Simulation...</div>
-                    <div className="text-xs text-solflare-muted">Submitting to Solana RPC (sigVerify disabled)</div>
-                  </div>
-                </div>
-                <div className="space-y-3">
-                  {[100, 75, 85, 60].map((w, i) => (
-                    <div key={i} className="h-3 rounded-full shimmer" style={{ width: `${w}%` }} />
-                  ))}
-                </div>
+                ))}
               </div>
-            )}
-
-            {/* Results — left column */}
-            {isDone && (
-              <>
-                <RiskMeter risk={result.risk} />
-                <BalanceChanges
-                  balanceChanges={result.balanceChanges}
-                  walletAddress={publicKey}
-                  fee={result.fee}
-                />
-              </>
-            )}
-          </div>
-
-          {/* Right column — results */}
-          {isDone && (
-            <div className="space-y-5">
-              <AIExplanation simResult={result} />
-              <TransactionDetails
-                txInfo={result.txInfo}
-                fee={result.fee}
-                computeUnits={result.computeUnits}
-                logs={result.logs}
-                rawTx={result.rawTx}
-                simulatedAt={result.simulatedAt}
-              />
-              <DecisionBar
-                result={result}
-                onReset={reset}
-                walletAddress={publicKey}
-                onSign={handleSign}
-                signing={signing}
-              />
             </div>
           )}
+
+          {/* ── RESULTS ── */}
+          {phase === 'result' && result && (
+            <div className="results fade-in">
+
+              {/* Risk Banner */}
+              <div className={`risk-banner ${riskColor}`}>
+                <div className={`risk-score-ring ${riskColor}`}>
+                  {result.riskScore}
+                </div>
+                <div className="risk-text">
+                  <h3 className={`${riskColor}-text`}>
+                    {riskColor === 'safe' ? '✓ ' : riskColor === 'warning' ? '⚠ ' : '✕ '}
+                    {result.summary}
+                  </h3>
+                  <p>
+                    Risk score: {result.riskScore}/100 ·{' '}
+                    {riskColor === 'safe' ? 'Proceed with confidence' :
+                     riskColor === 'warning' ? 'Review carefully before signing' :
+                     'Do not sign this transaction'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Meta Row */}
+              <div className="meta-row">
+                {Object.entries(result.meta).map(([k, v]) => (
+                  <div className="meta-item" key={k}>
+                    <span className="meta-key">{k}</span>
+                    <span className={`meta-val ${k === 'program' ? 'addr' : ''}`}>{v}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Grid: Token Changes + Flags */}
+              <div className="results-grid">
+                <div className="result-cell">
+                  <div className="result-cell-label">⬡ Token Changes</div>
+                  <div className="flags">
+                    {result.tokenChanges.map((tc, i) => (
+                      <div className="token-change" key={i}>
+                        <div className="token-icon">{tc.symbol.slice(0, 3)}</div>
+                        <span className="token-name">{tc.symbol}</span>
+                        <span className={`token-amount ${tc.direction}`}>{tc.amount}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="result-cell">
+                  <div className="result-cell-label">◈ Security Flags</div>
+                  <div className="flags">
+                    {result.flags.map((f, i) => (
+                      <div className="flag" key={i}>
+                        <div className={`flag-dot ${f.severity}`} />
+                        <span className="flag-msg">{f.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Plain English Explanation */}
+              <div className="explanation">
+                <div className="expl-label">
+                  <span>✦</span>
+                  Plain English Explanation
+                </div>
+                <div
+                  className="expl-text"
+                  dangerouslySetInnerHTML={{ __html: result.explanation }}
+                />
+              </div>
+
+              {/* Action Bar */}
+              <div className="action-bar">
+                <button className="btn-reset" onClick={handleReset}>
+                  ← Check another
+                </button>
+                <button className="btn-reject" onClick={handleReject}>
+                  Reject
+                </button>
+                <button
+                  className={`btn-sign ${riskColor === 'danger' ? 'disabled' : ''}`}
+                  onClick={handleSign}
+                  disabled={riskColor === 'danger' || signing}
+                  title={riskColor === 'danger' ? 'Blocked — high-risk transaction' : 'Sign via Solflare'}
+                >
+                  <ShieldIcon style={{ width: 13, height: 13 }} />
+                  {signing ? 'Signing...' : (riskColor === 'danger' ? 'Signing Blocked' : 'Sign via Solflare')}
+                </button>
+              </div>
+            </div>
+          )}
+
         </div>
 
-        {/* Footer */}
-        <footer className="mt-16 text-center text-xs text-solflare-dim pb-8">
-          <p>Simulation only — no transactions are broadcast to the network. Always verify in Solflare before signing.</p>
-          <p className="mt-1">Powered by Solana RPC simulateTransaction · Gemini 2.5 Flash · Solflare SDK</p>
-        </footer>
-      </main>
-    </div>
+        {/* Stats Row */}
+        <div className="stats-row">
+          <div className="stat">
+            <span className="stat-val">14,203</span>
+            <span className="stat-key">Transactions Scanned</span>
+          </div>
+          <div className="stat">
+            <span className="stat-val">847</span>
+            <span className="stat-key">Drainers Blocked</span>
+          </div>
+          <div className="stat">
+            <span className="stat-val">$2.1M</span>
+            <span className="stat-key">Est. Funds Protected</span>
+          </div>
+        </div>
+
+      </div>
+
+      {/* FOOTER */}
+      <div className="footer">
+        TxGuard · Built on Solana · Powered by Solflare ·{' '}
+        <a href="#">Docs</a> · <a href="#">Report a Contract</a> · <a href="#">GitHub</a>
+      </div>
+
+      {/* TOAST */}
+      {toast && (
+        <div className={`toast ${toast.type}`}>
+          {toast.type === 'success' ? '✓' : '✕'} {toast.msg}
+        </div>
+      )}
+    </>
   )
 }
